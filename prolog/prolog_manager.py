@@ -7,35 +7,30 @@ class PrologManager:
     def __init__(self):
 
         self.prolog = Prolog()
-
-        # =========================
-        # Cargar lógica Prolog
-        # =========================
         self.prolog.consult("prolog/pathfinding.pl")
 
+        # Cache de rutas
+        self.path_cache = {}
+
+        self.query_in_progress = False
+
     # =========================
-    # Limpiar hechos anteriores
+    # LIMPIAR HECHOS
     # =========================
+
     def clear_facts(self):
-
-        list(
-            self.prolog.query(
-                "retractall(connected(_, _))"
-            )
-        )
+        list(self.prolog.query("retractall(connected(_, _))"))
 
     # =========================
-    # Generar grafo desde mapa
+    # GENERAR GRAFO
     # =========================
+
     def generate_graph(self, level_loader):
 
         self.clear_facts()
 
         walls = set()
 
-        # =========================
-        # Registrar muros
-        # =========================
         for wall in level_loader.walls:
 
             grid_x = wall.rect.x // TILE_SIZE
@@ -46,22 +41,12 @@ class PrologManager:
         rows = len(level_loader.map_data)
         cols = len(level_loader.map_data[0])
 
-        # Debug útil (opcional)
-        print("ROWS:", rows, "COLS:", cols)
-        print("WALLS:", len(walls))
-
-        # =========================
-        # Crear conexiones del grafo
-        # =========================
         for y in range(rows):
-
             for x in range(cols):
 
-                # Saltar muro
                 if (x, y) in walls:
                     continue
 
-                # ⚠ IMPORTANTE: formato correcto de nodo
                 current = f"{x}_{y}"
 
                 directions = [
@@ -80,29 +65,72 @@ class PrologManager:
 
                         if (nx, ny) not in walls:
 
-                            # FORMATO CORRECTO (x_y)
                             neighbor = f"{nx}_{ny}"
 
-                            # Insertar hecho en Prolog
-                            self.prolog.assertz(f"connected('{current}','{neighbor}')")
-                            
+                            self.prolog.assertz(
+                                f"connected('{current}','{neighbor}')"
+                            )
 
     # =========================
-    # Buscar ruta con Prolog (DFS)
+    # PATHFINDING
     # =========================
+
     def find_path(self, start_x, start_y, goal_x, goal_y):
 
-        start = f"'{start_x}_{start_y}'"
-        goal = f"'{goal_x}_{goal_y}'"
+        if self.query_in_progress:
+            return []
 
-        query = f"path({start},{goal},Path)"
+        self.query_in_progress = True
 
-        # Solo una solución para evitar backtracking infinito
-        result = list(
-            self.prolog.query(query, maxresult=1)
-        )
+        try:
 
-        if result:
-            return result[0]["Path"]
+            cache_key = (
+                start_x,
+                start_y,
+                goal_x,
+                goal_y
+            )
+
+            if cache_key in self.path_cache:
+
+                self.query_in_progress = False
+                return self.path_cache[cache_key]
+
+            start = f"'{start_x}_{start_y}'"
+            goal = f"'{goal_x}_{goal_y}'"
+
+            query = f"path({start},{goal},Path)"
+
+            result = self.prolog.query(
+                query,
+                maxresult=1
+            )
+
+            result = list(result)
+
+            if result:
+
+                path = result[0]["Path"]
+
+                if isinstance(path, list):
+
+                    self.path_cache[cache_key] = path
+
+                    self.query_in_progress = False
+
+                    return path
+
+        except Exception as e:
+
+            print("PROLOG QUERY ERROR:", e)
+
+        self.query_in_progress = False
 
         return []
+
+    # =========================
+    # LIMPIAR CACHE
+    # =========================
+
+    def clear_cache(self):
+        self.path_cache.clear()

@@ -13,7 +13,9 @@ from game.constants import (
 
 from game.level_loader import LevelLoader
 from prolog.prolog_manager import PrologManager
-
+from logic.ai_controller import AIController
+from logic.tactical_manager import TacticalManager
+from logic.pathfinding import Pathfinding
 
 class GameManager:
 
@@ -44,6 +46,10 @@ class GameManager:
             self.level_loader
         )
 
+        self.tactical_manager = TacticalManager()
+        self.ai_controller = AIController(self.prolog_manager)
+        self.pathfinding = Pathfinding()
+
     def load_level(self):
 
         self.level_loader = LevelLoader()
@@ -52,7 +58,45 @@ class GameManager:
             "maps/level1.txt"
         )
 
+        # =========================
+        # BALAS
+        # =========================
+
         self.bullets = []
+
+        # =========================
+        # ASIGNAR OBJETIVO MÁS CERCANO
+        # =========================
+
+        for enemy in self.level_loader.enemies:
+
+            if enemy.role != "DEFENDER":
+                continue
+
+            closest_objective = None
+            closest_distance = float("inf")
+
+            for objective in self.level_loader.objectives:
+
+                dx = (
+                    objective.rect.centerx
+                    - enemy.rect.centerx
+                )
+
+                dy = (
+                    objective.rect.centery
+                    - enemy.rect.centery
+                )
+
+                distance = (dx * dx + dy * dy) ** 0.5
+
+                if distance < closest_distance:
+
+                    closest_distance = distance
+                    closest_objective = objective
+
+            enemy.target_objective = closest_objective
+
 
     def handle_events(self):
 
@@ -67,7 +111,14 @@ class GameManager:
                     self.running = False
 
                 if event.key == pygame.K_r:
+
                     self.load_level()
+
+                    self.prolog_manager.generate_graph(
+                        self.level_loader
+                    )
+
+                    self.prolog_manager.clear_cache()
 
     def update(self):
 
@@ -86,13 +137,23 @@ class GameManager:
         # =========================
         # Enemigos
         # =========================
-        for enemy in self.level_loader.enemies:
+        self.tactical_manager.update(
+            self.level_loader.player
+        )
+        for enemy in self.level_loader.enemies[:]:
 
             enemy.update(
-            self.level_loader.player,
-            self.level_loader.objectives,
-            self.level_loader.walls
-        )
+                self.level_loader.player,
+                self.level_loader.objectives,
+                self.level_loader.walls,
+                self.level_loader.enemies,
+                self.ai_controller,
+                self.tactical_manager,
+                self.pathfinding,
+                TILE_SIZE,
+                self.level_loader.map_width,
+                self.level_loader.map_height
+            )
 
         # =========================
         # Balas
@@ -121,7 +182,7 @@ class GameManager:
                             self.level_loader.enemies.remove(enemy)
 
             # Colisión con objetivos
-            for objective in self.level_loader.objectives:
+            for objective in self.level_loader.objectives[:]:
 
                 if bullet.rect.colliderect(objective.rect):
 
