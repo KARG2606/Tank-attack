@@ -10,7 +10,9 @@ from game.constants import (
     BACKGROUND_COLOR,
     TILE_SIZE
 )
+
 from game.level_loader import LevelLoader
+from prolog.prolog_manager import PrologManager
 
 
 class GameManager:
@@ -35,6 +37,12 @@ class GameManager:
         self.running = True
 
         self.load_level()
+
+        self.prolog_manager = PrologManager()
+
+        self.prolog_manager.generate_graph(
+            self.level_loader
+        )
 
     def load_level(self):
 
