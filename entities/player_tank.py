@@ -9,6 +9,9 @@ from entities.bullet import Bullet
 
 class PlayerTank(Entity):
 
+    MAX_LIVES = 3
+    INVULN_FRAMES = 90
+
     def __init__(self, x, y, size):
 
         super().__init__(
@@ -23,6 +26,42 @@ class PlayerTank(Entity):
         self.direction = "UP"
 
         self.shoot_cooldown = 0
+
+        self._spawn_x = x
+        self._spawn_y = y
+
+        self._lives = PlayerTank.MAX_LIVES
+        self._invuln_timer = 0
+
+    @property
+    def lives(self):
+        return self._lives
+
+    @property
+    def is_invulnerable(self):
+        return self._invuln_timer > 0
+
+    def take_damage(self):
+
+        if self._invuln_timer > 0:
+            return False
+
+        self._lives -= 1
+
+        if self._lives > 0:
+            self._respawn()
+
+        return True
+
+    def _respawn(self):
+
+        self.rect.x = self._spawn_x
+        self.rect.y = self._spawn_y
+
+        self.x = self._spawn_x
+        self.y = self._spawn_y
+
+        self._invuln_timer = PlayerTank.INVULN_FRAMES
 
     def move(self, dx, dy, walls):
 
@@ -73,6 +112,10 @@ class PlayerTank(Entity):
     def update(self, walls):
         if self.shoot_cooldown > 0:
             self.shoot_cooldown -= 1
+
+        if self._invuln_timer > 0:
+            self._invuln_timer -= 1
+
         keys = pygame.key.get_pressed()
 
         dx = 0

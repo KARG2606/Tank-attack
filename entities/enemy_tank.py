@@ -2,8 +2,18 @@ import math
 import random
 
 from entities.entity import Entity
+from entities.bullet import Bullet
 
 from ai.enemy_state import EnemyState
+
+
+# Cooldown de disparo por tipo (frames a 60 FPS).
+# Tipo 1: rápido, ráfaga corta. Tipo 2: medio. Tipo 3: lento pero pesado.
+SHOOT_COOLDOWN_BY_TYPE = {
+    1: 60,
+    2: 90,
+    3: 120,
+}
 
 
 class EnemyTank(Entity):
@@ -57,6 +67,14 @@ class EnemyTank(Entity):
         self.move_timer = 0
 
         self.current_direction = None
+
+        # =========================
+        # Disparo
+        # =========================
+        self._shoot_cooldown = 0
+        self._shoot_cooldown_max = SHOOT_COOLDOWN_BY_TYPE.get(
+            enemy_type, 90
+        )
 
     # =========================
     # Distancia jugador
@@ -214,6 +232,44 @@ class EnemyTank(Entity):
         self.y = self.rect.y
         
     # =========================
+    # Disparo
+    # =========================
+    def _direction_to(self, player):
+
+        dx = player.rect.centerx - self.rect.centerx
+        dy = player.rect.centery - self.rect.centery
+
+        if abs(dx) > abs(dy):
+            return "RIGHT" if dx > 0 else "LEFT"
+
+        return "DOWN" if dy > 0 else "UP"
+
+    def shoot(self, player):
+
+        if self._shoot_cooldown > 0:
+            return None
+
+        self._shoot_cooldown = self._shoot_cooldown_max
+
+        bullet_size = self.size // 4
+
+        bullet_x = (
+            self.rect.centerx - bullet_size // 2
+        )
+
+        bullet_y = (
+            self.rect.centery - bullet_size // 2
+        )
+
+        return Bullet(
+            bullet_x,
+            bullet_y,
+            bullet_size,
+            self._direction_to(player),
+            "ENEMY"
+        )
+
+    # =========================
     # IA principal
     # =========================
     def update(
@@ -222,6 +278,9 @@ class EnemyTank(Entity):
         objectives,
         walls
     ):
+
+        if self._shoot_cooldown > 0:
+            self._shoot_cooldown -= 1
 
         # =========================
         # Elegir objetivo cercano
@@ -275,8 +334,8 @@ class EnemyTank(Entity):
         # =========================
         elif self.state == EnemyState.ATTACK:
 
-            # Mantener posición táctica
-            pass
+            # Mantiene posición táctica y dispara hacia el jugador.
+            return self.shoot(player)
 
         # =========================
         # RETREAT
@@ -288,6 +347,8 @@ class EnemyTank(Entity):
                 player.rect.centery,
                 walls
             )
+
+        return None
 
     def move_away_from(
         self,

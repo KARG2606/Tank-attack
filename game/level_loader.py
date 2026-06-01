@@ -3,7 +3,7 @@ from game.constants import TILE_SIZE
 from entities.wall import Wall
 from entities.player_tank import PlayerTank
 from entities.enemy_tank import EnemyTank
-from entities.objective import Objective
+from entities.objective import ObjetivoTipo1, ObjetivoTipo2
 
 
 class LevelLoader:
@@ -104,15 +104,19 @@ class LevelLoader:
                     )
 
                 # =========================
-                # Objetivos
+                # Objetivo tipo 1
                 # =========================
                 elif char == "O":
 
                     self.objectives.append(
+                        ObjetivoTipo1(x, y, TILE_SIZE)
+                    )
 
-                        Objective(
-                            x,
-                            y,
-                            TILE_SIZE
-                        )
+                # =========================
+                # Objetivo tipo 2
+                # =========================
+                elif char == "Q":
+
+                    self.objectives.append(
+                        ObjetivoTipo2(x, y, TILE_SIZE)
                     )
