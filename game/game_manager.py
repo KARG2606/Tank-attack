@@ -438,20 +438,21 @@ class GameManager:
                 ),
             )
 
-        # Enemigos.
+        # Enemigos (con halo de rol debajo para reconocerlos).
         for enemy in self.level_loader.enemies:
+            center = (
+                enemy.rect.centerx + offset_x,
+                enemy.rect.centery + offset_y,
+            )
+            self._draw_halo(center, enemy.color)
+
             sprite = self.assets.tank_sprite_for(
                 enemy, enemy.enemy_type
             )
-            rect = sprite.get_rect(
-                center=(
-                    enemy.rect.centerx + offset_x,
-                    enemy.rect.centery + offset_y,
-                )
-            )
+            rect = sprite.get_rect(center=center)
             self.game_surface.blit(sprite, rect)
 
-        # Jugador (parpadea si invulnerable).
+        # Jugador (halo verde + parpadeo si invulnerable).
         if self.level_loader.player:
             player = self.level_loader.player
             blink_visible = (
@@ -459,15 +460,16 @@ class GameManager:
                 or (pygame.time.get_ticks() // 80) % 2 == 0
             )
             if blink_visible:
+                center = (
+                    player.rect.centerx + offset_x,
+                    player.rect.centery + offset_y,
+                )
+                self._draw_halo(center, (60, 220, 80))
+
                 sprite = self.assets.tank_sprite_for(
                     player, "player"
                 )
-                rect = sprite.get_rect(
-                    center=(
-                        player.rect.centerx + offset_x,
-                        player.rect.centery + offset_y,
-                    )
-                )
+                rect = sprite.get_rect(center=center)
                 self.game_surface.blit(sprite, rect)
 
         # Balas (cuadritos blancos — no hay sprite específico).
@@ -476,6 +478,21 @@ class GameManager:
             r.x += offset_x
             r.y += offset_y
             pygame.draw.rect(self.game_surface, bullet.color, r)
+
+    def _draw_halo(self, center, color):
+        """
+        Disco semitransparente bajo un tanque para distinguirlo
+        del resto (color del rol).
+        """
+        radius = TILE_SIZE // 2 + 4
+        halo = pygame.Surface(
+            (radius * 2, radius * 2), pygame.SRCALPHA
+        )
+        pygame.draw.circle(
+            halo, (*color, 140), (radius, radius), radius
+        )
+        rect = halo.get_rect(center=center)
+        self.game_surface.blit(halo, rect)
 
     def _draw_hud(self):
 

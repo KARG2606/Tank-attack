@@ -132,11 +132,25 @@ class EnemyTank(Entity):
         self.direction = self._direction_to(player)
 
         bullet_size = self.size // 4
-        bullet_x = self.rect.centerx - bullet_size // 2
-        bullet_y = self.rect.centery - bullet_size // 2
+        half = self.size // 2
+
+        # La bala sale del cañón (borde del tanque en la dirección
+        # de disparo), no del centro del chasis.
+        if self.direction == "UP":
+            bx = self.rect.centerx - bullet_size // 2
+            by = self.rect.centery - half - bullet_size
+        elif self.direction == "DOWN":
+            bx = self.rect.centerx - bullet_size // 2
+            by = self.rect.centery + half
+        elif self.direction == "LEFT":
+            bx = self.rect.centerx - half - bullet_size
+            by = self.rect.centery - bullet_size // 2
+        else:  # RIGHT
+            bx = self.rect.centerx + half
+            by = self.rect.centery - bullet_size // 2
 
         return Bullet(
-            bullet_x, bullet_y, bullet_size, self.direction, "ENEMY"
+            bx, by, bullet_size, self.direction, "ENEMY"
         )
 
     # =========================

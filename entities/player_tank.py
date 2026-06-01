@@ -90,16 +90,21 @@ class PlayerTank(Entity):
     def shoot(self):
 
         bullet_size = self.size // 4
+        half = self.size // 2
 
-        bullet_x = (
-            self.rect.centerx
-            - bullet_size // 2
-        )
-
-        bullet_y = (
-            self.rect.centery
-            - bullet_size // 2
-        )
+        # La bala sale del cañón, no del centro del tanque.
+        if self.direction == "UP":
+            bullet_x = self.rect.centerx - bullet_size // 2
+            bullet_y = self.rect.centery - half - bullet_size
+        elif self.direction == "DOWN":
+            bullet_x = self.rect.centerx - bullet_size // 2
+            bullet_y = self.rect.centery + half
+        elif self.direction == "LEFT":
+            bullet_x = self.rect.centerx - half - bullet_size
+            bullet_y = self.rect.centery - bullet_size // 2
+        else:  # RIGHT
+            bullet_x = self.rect.centerx + half
+            bullet_y = self.rect.centery - bullet_size // 2
 
         return Bullet(
             bullet_x,
