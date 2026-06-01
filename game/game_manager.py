@@ -17,6 +17,7 @@ from logic.ai_controller import AIController
 from logic.tactical_manager import TacticalManager
 from logic.pathfinding import Pathfinding
 
+
 class GameManager:
 
     def __init__(self):
@@ -34,69 +35,56 @@ class GameManager:
 
         pygame.display.set_caption(TITLE)
 
-        self.clock = pygame.time.Clock()
+        self.clock        = pygame.time.Clock()
+        self.running      = True
 
-        self.running = True
+        self.prolog_manager   = PrologManager()
+        self.tactical_manager = TacticalManager()
+        self.ai_controller    = AIController(self.prolog_manager)
+        self.pathfinding      = Pathfinding()
 
         self.load_level()
 
-        self.prolog_manager = PrologManager()
-
-        self.prolog_manager.generate_graph(
-            self.level_loader
-        )
-
-        self.tactical_manager = TacticalManager()
-        self.ai_controller = AIController(self.prolog_manager)
-        self.pathfinding = Pathfinding()
+    # =========================================================================
+    #  CARGA DE NIVEL
+    # =========================================================================
 
     def load_level(self):
 
         self.level_loader = LevelLoader()
-
-        self.level_loader.load_level(
-            "maps/level1.txt"
-        )
-
-        # =========================
-        # BALAS
-        # =========================
+        self.level_loader.load_level("maps/level1.txt")
 
         self.bullets = []
 
-        # =========================
-        # ASIGNAR OBJETIVO MÁS CERCANO
-        # =========================
+        self.prolog_manager.generate_graph(self.level_loader)
 
+        # Limpiar cache de pathfinding al recargar (muros nuevos)
+        self.pathfinding.clear_cache()
+
+        # Construir wall_set una sola vez para todo el nivel
+        self._wall_set = Pathfinding.build_wall_set(
+            self.level_loader.walls,
+            TILE_SIZE
+        )
+
+        # Inyectar datos de pathfinding en cada tanque enemigo
         for enemy in self.level_loader.enemies:
+            enemy.setup_pathfinding(
+                self._wall_set,
+                self.level_loader.map_width,
+                self.level_loader.map_height,
+                TILE_SIZE
+            )
 
-            if enemy.role != "DEFENDER":
-                continue
+        # Asignar base más cercana a tipos 1 y 2
+        AIController.assign_bases(
+            self.level_loader.enemies,
+            self.level_loader.objectives
+        )
 
-            closest_objective = None
-            closest_distance = float("inf")
-
-            for objective in self.level_loader.objectives:
-
-                dx = (
-                    objective.rect.centerx
-                    - enemy.rect.centerx
-                )
-
-                dy = (
-                    objective.rect.centery
-                    - enemy.rect.centery
-                )
-
-                distance = (dx * dx + dy * dy) ** 0.5
-
-                if distance < closest_distance:
-
-                    closest_distance = distance
-                    closest_objective = objective
-
-            enemy.target_objective = closest_objective
-
+    # =========================================================================
+    #  EVENTOS
+    # =========================================================================
 
     def handle_events(self):
 
@@ -111,227 +99,157 @@ class GameManager:
                     self.running = False
 
                 if event.key == pygame.K_r:
-
                     self.load_level()
-
-                    self.prolog_manager.generate_graph(
-                        self.level_loader
-                    )
-
                     self.prolog_manager.clear_cache()
+
+    # =========================================================================
+    #  UPDATE
+    # =========================================================================
 
     def update(self):
 
-        # =========================
-        # Jugador
-        # =========================
+        # --- Jugador ---
         if self.level_loader.player:
-
             bullet = self.level_loader.player.update(
                 self.level_loader.walls
+            )
+            if bullet:
+                self.bullets.append(bullet)
+
+        # --- Enemigos ---
+        self.tactical_manager.update(self.level_loader.player)
+
+        for enemy in self.level_loader.enemies[:]:
+
+            ai_state = self.ai_controller.decide(
+                enemy,
+                self.level_loader.player,
+                self.level_loader.objectives,
+                self.level_loader.walls
+            )
+
+            bullet = enemy.update(
+                self.level_loader.player,
+                self.level_loader.objectives,
+                self.level_loader.walls,
+                ai_state,
+                pathfinding=self.pathfinding,
+                enemies=self.level_loader.enemies
             )
 
             if bullet:
                 self.bullets.append(bullet)
 
-        # =========================
-        # Enemigos
-        # =========================
-        self.tactical_manager.update(
-            self.level_loader.player
-        )
-        for enemy in self.level_loader.enemies[:]:
-
-            enemy.update(
-                self.level_loader.player,
-                self.level_loader.objectives,
-                self.level_loader.walls,
-                self.level_loader.enemies,
-                self.ai_controller,
-                self.tactical_manager,
-                self.pathfinding,
-                TILE_SIZE,
-                self.level_loader.map_width,
-                self.level_loader.map_height
-            )
-
-        # =========================
-        # Balas
-        # =========================
+        # --- Balas ---
         for bullet in self.bullets:
 
             bullet.update()
 
             # Colisión con muros
-            for wall in self.level_loader.walls:
-
-                if bullet.rect.colliderect(wall.rect):
-
-                    bullet.active = False
-
-            # Colisión con enemigos
-            for enemy in self.level_loader.enemies:
-
-                if bullet.owner == "PLAYER":
-
-                    if bullet.rect.colliderect(enemy.rect):
-
+            if bullet.active:
+                for wall in self.level_loader.walls:
+                    if bullet.rect.colliderect(wall.rect):
                         bullet.active = False
+                        break
 
-                        if enemy in self.level_loader.enemies:
-                            self.level_loader.enemies.remove(enemy)
+            # Colisión con enemigos (bala del jugador)
+            if bullet.active and bullet.owner == "PLAYER":
+                for enemy in self.level_loader.enemies:
+                    if bullet.rect.colliderect(enemy.rect):
+                        bullet.active = False
+                        self.level_loader.enemies.remove(enemy)
+                        break
+
+            # Colisión con jugador (bala enemiga)
+            if (
+                bullet.active
+                and bullet.owner == "ENEMY"
+                and self.level_loader.player
+            ):
+                if bullet.rect.colliderect(self.level_loader.player.rect):
+                    bullet.active = False
+                    # Aquí puedes restar vida al jugador
 
             # Colisión con objetivos
-            for objective in self.level_loader.objectives[:]:
-
-                if bullet.rect.colliderect(objective.rect):
-
-                    bullet.active = False
-
-                    if objective in self.level_loader.objectives:
+            if bullet.active:
+                for objective in self.level_loader.objectives[:]:
+                    if bullet.rect.colliderect(objective.rect):
+                        bullet.active = False
+                        objective.destroyed = True
                         self.level_loader.objectives.remove(objective)
+                        # Reasignar bases; tipos sin base → ASSAULT
+                        AIController.assign_bases(
+                            self.level_loader.enemies,
+                            self.level_loader.objectives
+                        )
+                        break
 
-        # Eliminar balas inactivas
-        self.bullets = [
-            bullet
-            for bullet in self.bullets
-            if bullet.active
-        ]
+        self.bullets = [b for b in self.bullets if b.active]
+
+    # =========================================================================
+    #  DRAW
+    # =========================================================================
 
     def draw(self):
 
         self.game_surface.fill(BACKGROUND_COLOR)
 
-        # Tamaño real del mapa
-        map_pixel_width = (
-            self.level_loader.map_width * TILE_SIZE
-        )
+        map_pixel_width  = self.level_loader.map_width  * TILE_SIZE
+        map_pixel_height = self.level_loader.map_height * TILE_SIZE
+        offset_x = (LOGICAL_WIDTH  - map_pixel_width)  // 2
+        offset_y = (LOGICAL_HEIGHT - map_pixel_height) // 2
 
-        map_pixel_height = (
-            self.level_loader.map_height * TILE_SIZE
-        )
-
-        # Centrar mapa
-        offset_x = (
-            (LOGICAL_WIDTH - map_pixel_width) // 2
-        )
-
-        offset_y = (
-            (LOGICAL_HEIGHT - map_pixel_height) // 2
-        )
-
-        # =========================
-        # Dibujar muros
-        # =========================
         for wall in self.level_loader.walls:
-
-            draw_rect = wall.rect.copy()
-
-            draw_rect.x += offset_x
-            draw_rect.y += offset_y
-
             pygame.draw.rect(
-                self.game_surface,
-                wall.color,
-                draw_rect
+                self.game_surface, wall.color,
+                wall.rect.move(offset_x, offset_y)
             )
 
-        # =========================
-        # Dibujar enemigos
-        # =========================
-        for enemy in self.level_loader.enemies:
-
-            draw_rect = enemy.rect.copy()
-
-            draw_rect.x += offset_x
-            draw_rect.y += offset_y
-
-            pygame.draw.rect(
-                self.game_surface,
-                enemy.color,
-                draw_rect
-            )
-
-        # =========================
-        # Dibujar objetivos
-        # =========================
         for objective in self.level_loader.objectives:
-
-            draw_rect = objective.rect.copy()
-
-            draw_rect.x += offset_x
-            draw_rect.y += offset_y
-
             pygame.draw.rect(
-                self.game_surface,
-                objective.color,
-                draw_rect
+                self.game_surface, objective.color,
+                objective.rect.move(offset_x, offset_y)
             )
 
-        # =========================
-        # Dibujar jugador
-        # =========================
+        for enemy in self.level_loader.enemies:
+            pygame.draw.rect(
+                self.game_surface, enemy.color,
+                enemy.rect.move(offset_x, offset_y)
+            )
+
         if self.level_loader.player:
-
-            player = self.level_loader.player
-
-            draw_rect = player.rect.copy()
-
-            draw_rect.x += offset_x
-            draw_rect.y += offset_y
-
             pygame.draw.rect(
-                self.game_surface,
-                player.color,
-                draw_rect
+                self.game_surface, self.level_loader.player.color,
+                self.level_loader.player.rect.move(offset_x, offset_y)
             )
-        # =========================
-        # Dibujar balas
-        # =========================
+
         for bullet in self.bullets:
-
-            draw_rect = bullet.rect.copy()
-
-            draw_rect.x += offset_x
-            draw_rect.y += offset_y
-
             pygame.draw.rect(
-                self.game_surface,
-                bullet.color,
-                draw_rect
+                self.game_surface, bullet.color,
+                bullet.rect.move(offset_x, offset_y)
             )
 
-        # Escalar a pantalla real
         scaled_surface = pygame.transform.scale(
             self.game_surface,
-            (
-                self.screen.get_width(),
-                self.screen.get_height()
-            )
+            (self.screen.get_width(), self.screen.get_height())
         )
-
-        # Dibujar en ventana
         self.screen.blit(scaled_surface, (0, 0))
 
-        # Mostrar FPS
-        fps = int(self.clock.get_fps())
-
         pygame.display.set_caption(
-            f"{TITLE} - FPS: {fps}"
+            f"{TITLE} - FPS: {int(self.clock.get_fps())}"
         )
-
         pygame.display.flip()
+
+    # =========================================================================
+    #  LOOP PRINCIPAL
+    # =========================================================================
 
     def run(self):
 
         while self.running:
-
             self.clock.tick(FPS)
-
             self.handle_events()
-
             self.update()
-
             self.draw()
 
         pygame.quit()

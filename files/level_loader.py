@@ -99,7 +99,7 @@ class LevelLoader:
                             x,
                             y,
                             TILE_SIZE,
-                            tank_type=int(char)  # Corregido: era enemy_type
+                            enemy_type=int(char)
                         )
                     )
 

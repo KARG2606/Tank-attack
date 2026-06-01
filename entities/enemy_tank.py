@@ -2,742 +2,487 @@ import math
 import random
 
 from entities.entity import Entity
-from ai.enemy_state import EnemyState
+from game.collision_manager import CollisionManager
+from entities.bullet import Bullet
+
+
+# =============================================================================
+#  CONSTANTES DE COMPORTAMIENTO
+# =============================================================================
+
+BASE_LEASH_RADIUS     = 300   # Px máximos desde la base antes de regresar
+PATROL_RADIUS_MIN     = 80    # Radio mínimo de patrulla
+PATROL_RADIUS_MAX     = 160   # Radio máximo de patrulla
+WAYPOINT_TOLERANCE    = 10    # Px para considerar que llegó a un waypoint
+DETECT_RADIUS         = 220   # Px de detección del jugador
+ATTACK_RADIUS         = 130   # Px para disparar
+FLANK_ORBIT_RADIUS    = 110   # Radio de órbita tipo 3 (flanqueo fino)
+SHOOT_COOLDOWN_FRAMES = 60    # Frames entre disparos
+
+# Frames entre recálculos de path BFS.
+# Tipo 3 recalcula más seguido porque persigue al jugador en movimiento.
+PATH_REFRESH_TYPE3    = 30    # ~0.5 s a 60 fps
+PATH_REFRESH_DEFAULT  = 60    # ~1 s a 60 fps
+
+# Píxeles que debe avanzar el tanque antes de cambiar de eje (anti-diagonal)
+DIR_LOCK_DISTANCE     = 20
+
+# Velocidades por tipo
+SPEED_BY_TYPE  = {1: 1.2, 2: 1.6, 3: 2.0}
+
+# Colores por tipo
+COLOR_BY_TYPE  = {1: (180, 60, 60), 2: (200, 120, 0), 3: (140, 0, 200)}
+
+# Ángulos de emboscada para cada posible índice de tanque tipo 3 (en radianes).
+# Si hay 3 tanques tipo 3, se reparten 120° entre sí alrededor del jugador.
+AMBUSH_ANGLES = [0.0, 2.094, 4.189]   # 0°, 120°, 240°
+
+
+# =============================================================================
+#  ESTADOS DE LA IA
+# =============================================================================
+
+STATE_PATROL  = "PATROL"
+STATE_CHASE   = "CHASE"
+STATE_ATTACK  = "ATTACK"
+STATE_RETURN  = "RETURN"
+STATE_DEFEND  = "DEFEND"
+STATE_FLANK   = "FLANK"
+STATE_ASSAULT = "ASSAULT"
 
 
 class EnemyTank(Entity):
 
-    def __init__(self, x, y, size, enemy_type=1):
+    # Contador de clase para asignar índices de emboscada únicos a tipo 3
+    _type3_counter = 0
 
-        self.enemy_type = enemy_type
-
-        # =========================
-        # ROLE BASE
-        # =========================
-
-        if enemy_type == 1:
-            self.role = "ASSAULT"
-
-        elif enemy_type == 2:
-            self.role = "DEFENDER"
-
-        else:
-            self.role = "FLANKER"
-
-        # =========================
-        # COLOR
-        # =========================
-
-        if enemy_type == 1:
-            color = (200, 0, 0)
-
-        elif enemy_type == 2:
-            color = (0, 120, 255)
-
-        else:
-            color = (0, 200, 100)
-
+    def __init__(self, x, y, size, tank_type=1):
+        color = COLOR_BY_TYPE.get(tank_type, (180, 60, 60))
         super().__init__(x, y, size, color)
 
-        # =========================
-        # FSM
-        # =========================
+        self.tank_type = tank_type
+        self.speed     = SPEED_BY_TYPE.get(tank_type, 1.2)
+        self.direction = "DOWN"
+        self.state     = STATE_PATROL
 
-        self.state = EnemyState.PATROL
+        # --- Base asignada ---
+        self.home_base = None
+        self.base_lost = False
 
-        # =========================
-        # OBJECTIVES
-        # =========================
+        # --- Patrulla ---
+        self.patrol_points = []
+        self.patrol_index  = 0
+        self._generate_patrol_points()
 
-        self.target_objective = None
+        # --- Flanqueo orbital (tipo 3, fallback sin path) ---
+        self.flank_dir = random.choice([-1, 1])
+        self.flank_angle = random.uniform(0, 2 * math.pi)
 
-        # =========================
-        # PATH
-        # =========================
+        # --- Índice de emboscada (tipo 3): ángulo único por tanque ---
+        if tank_type == 3:
+            self.ambush_index = EnemyTank._type3_counter % len(AMBUSH_ANGLES)
+            EnemyTank._type3_counter += 1
+        else:
+            self.ambush_index = 0
 
-        self.current_path = []
-        self.path_index = 0
-
-        # =========================
-        # TIMERS
-        # =========================
-
-        self.repath_interval = 60
-        self.repath_timer = random.randint(0, 60)
-
-        self.ai_interval = 30
-        self.ai_timer = 0
-
-        # =========================
-        # TARGET LOCK
-        # =========================
-
-        self.target_lock_timer = 0
-        self.target_lock_duration = 30
-
-        # =========================
-        # MOVEMENT
-        # =========================
-
-        self.speed = 3
-
-        # =========================
-        # TARGETS
-        # =========================
-
-        self.target_x = None
-        self.target_y = None
-
-        # =========================
-        # PATROL
-        # =========================
-
-        self.patrol_target = None
-
-        # =========================
-        # COMBAT
-        # =========================
-
-        self.attack_range = 140
-        self.too_close_range = 70
+        # --- Disparo ---
         self.shoot_cooldown = 0
-        self.detection_range = 150
-        self.defense_radius = 220
-        self.defense_patrol_radius = 80
-        self.alerted = False
 
-        self.spawn_x = x
-        self.spawn_y = y
+        # --- Pathfinding ---
+        # path: lista de (px, py) centros de tile a seguir
+        self._path          = []
+        self._path_index    = 0
+        self._path_timer    = 0   # Frames desde el último recálculo
+        # Último destino para el que se calculó el path (en píxeles)
+        self._path_goal     = None
+        # Wall set y parámetros de mapa (inyectados por GameManager)
+        self.wall_set       = None
+        self.map_width      = 0
+        self.map_height     = 0
+        self.tile_size      = 32
 
-        self.max_chase_distance = 250
+        # --- Bloqueo de eje (anti-diagonal) ---
+        self._locked_axis   = None   # "H" | "V"
+        self._dist_in_axis  = 0.0
 
-    # =========================
-    # DISTANCIA AL JUGADOR
-    # =========================
+    # =========================================================================
+    #  CONFIGURACIÓN DE PATHFINDING (llamar desde GameManager tras cargar nivel)
+    # =========================================================================
+
+    def setup_pathfinding(self, wall_set, map_width, map_height, tile_size):
+        self.wall_set   = wall_set
+        self.map_width  = map_width
+        self.map_height = map_height
+        self.tile_size  = tile_size
+
+    # =========================================================================
+    #  PATRULLA
+    # =========================================================================
+
+    def _generate_patrol_points(self, num_points=6):
+        self.patrol_points = []
+        if self.home_base is None:
+            cx, cy = self.rect.centerx, self.rect.centery
+        else:
+            cx, cy = self.home_base.rect.centerx, self.home_base.rect.centery
+
+        radius = random.randint(PATROL_RADIUS_MIN, PATROL_RADIUS_MAX)
+        for i in range(num_points):
+            angle = (2 * math.pi / num_points) * i + random.uniform(-0.3, 0.3)
+            self.patrol_points.append((
+                cx + radius * math.cos(angle),
+                cy + radius * math.sin(angle)
+            ))
+
+    def assign_base(self, base):
+        self.home_base = base
+        self._generate_patrol_points()
+
+    @property
+    def patrol_target(self):
+        if not self.patrol_points:
+            return None
+        return self.patrol_points[self.patrol_index % len(self.patrol_points)]
+
+    def _advance_patrol(self):
+        if self.patrol_points:
+            self.patrol_index = (self.patrol_index + 1) % len(self.patrol_points)
+
+    # =========================================================================
+    #  DISTANCIAS
+    # =========================================================================
 
     def distance_to_player(self, player):
-
-        dx = player.rect.centerx - self.rect.centerx
-        dy = player.rect.centery - self.rect.centery
-
-        return math.sqrt(dx * dx + dy * dy)
-    
-    # =========================
-    # GENERAR PATRULLA
-    # =========================
-
-    def generate_patrol_point(self):
-
-        patrol_distance = 120
-
-        offset_x = random.randint(
-            -patrol_distance,
-            patrol_distance
+        return math.hypot(
+            player.rect.centerx - self.rect.centerx,
+            player.rect.centery - self.rect.centery
         )
 
-        offset_y = random.randint(
-            -patrol_distance,
-            patrol_distance
+    def distance_to_point(self, x, y):
+        return math.hypot(x - self.rect.centerx, y - self.rect.centery)
+
+    def distance_to_base(self):
+        if self.home_base is None:
+            return 0
+        return self.distance_to_point(
+            self.home_base.rect.centerx,
+            self.home_base.rect.centery
         )
 
-        self.patrol_target = (
-            self.rect.centerx + offset_x,
-            self.rect.centery + offset_y
+    # =========================================================================
+    #  PATHFINDING
+    # =========================================================================
+
+    def _request_path(self, pathfinding, goal_px, goal_py):
+        """
+        Pide un nuevo path BFS al módulo de pathfinding.
+        Solo recalcula si el goal cambió de tile o el timer expiró.
+        """
+        if self.wall_set is None:
+            return
+
+        refresh = (
+            PATH_REFRESH_TYPE3 if self.tank_type == 3
+            else PATH_REFRESH_DEFAULT
         )
 
-    # =========================
-    # FOLLOW PATH
-    # =========================
+        # Determinar si hace falta recalcular
+        goal_tile = (
+            int(goal_px // self.tile_size),
+            int(goal_py // self.tile_size)
+        )
+        needs_refresh = (
+            self._path_timer >= refresh
+            or self._path_goal != goal_tile
+            or not self._path
+        )
 
-    def follow_path(self, tile_size):
-
-        # =========================
-        # NO HAY PATH
-        # =========================
-
-        if not self.current_path:
-            return
-
-        # =========================
-        # TERMINÓ RUTA
-        # =========================
-
-        if self.path_index >= len(self.current_path):
-
-            self.current_path = []
-            self.path_index = 0
-
-            self.patrol_target = None
-
-            # permitir nueva decisión
-            self.target_lock_timer = 0
-
-            return
-
-        # =========================
-        # NODO ACTUAL
-        # =========================
-
-        node = self.current_path[self.path_index]
-
-        # BFS devuelve (x, y)
-        x, y = node
-
-        # =========================
-        # CENTRO DEL TILE
-        # =========================
-
-        target_x = (x * tile_size) + (tile_size // 2)
-        target_y = (y * tile_size) + (tile_size // 2)
-
-        dx = target_x - self.rect.centerx
-        dy = target_y - self.rect.centery
-
-        # =========================
-        # LLEGÓ AL NODO
-        # =========================
-
-        if abs(dx) < 5 and abs(dy) < 5:
-
-            self.path_index += 1
-
-            return
-
-        # =========================
-        # MOVIMIENTO CARDINAL
-        # =========================
-
-        if abs(dx) > abs(dy):
-
-            if dx > 0:
-                self.rect.x += self.speed
-            else:
-                self.rect.x -= self.speed
-
+        if needs_refresh:
+            new_path = pathfinding.find_path(
+                self.rect.centerx, self.rect.centery,
+                goal_px, goal_py,
+                self.wall_set,
+                self.map_width, self.map_height,
+                self.tile_size
+            )
+            self._path       = new_path
+            self._path_index = 0
+            self._path_goal  = goal_tile
+            self._path_timer = 0
         else:
+            self._path_timer += 1
 
-            if dy > 0:
-                self.rect.y += self.speed
+    def _next_path_waypoint(self):
+        """
+        Devuelve el siguiente waypoint del path activo,
+        avanzando el índice si el tanque ya llegó al actual.
+        Retorna None si el path está vacío o terminado.
+        """
+        while self._path_index < len(self._path):
+            wp = self._path[self._path_index]
+            if self.distance_to_point(*wp) < WAYPOINT_TOLERANCE:
+                self._path_index += 1
             else:
-                self.rect.y -= self.speed
+                return wp
+        return None
+
+    # =========================================================================
+    #  MOVIMIENTO  (un eje por frame — sin diagonal)
+    # =========================================================================
+
+    def _choose_axis(self, dx, dy):
+        if (
+            self._locked_axis is not None
+            and self._dist_in_axis < DIR_LOCK_DISTANCE
+        ):
+            return self._locked_axis
+
+        new_axis = "H" if abs(dx) >= abs(dy) else "V"
+        if new_axis != self._locked_axis:
+            self._locked_axis  = new_axis
+            self._dist_in_axis = 0.0
+        return self._locked_axis
+
+    def _move_toward(self, tx, ty, walls):
+        """
+        Avanza hacia (tx, ty) en un solo eje.
+        Si colisiona, intenta el eje alternativo para no quedarse pegado.
+        """
+        dx = tx - self.rect.centerx
+        dy = ty - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist < 1:
+            return
+
+        ndx = dx / dist
+        ndy = dy / dist
+        axis = self._choose_axis(dx, dy)
+
+        if axis == "H":
+            step = ndx * self.speed
+            self.rect.x += step
+            if CollisionManager.check_wall_collision(self.rect, walls):
+                self.rect.x -= step
+                # Escape vertical
+                step_v = ndy * self.speed
+                self.rect.y += step_v
+                if CollisionManager.check_wall_collision(self.rect, walls):
+                    self.rect.y -= step_v
+                else:
+                    self._locked_axis  = "V"
+                    self._dist_in_axis = 0.0
+                    self.direction = "DOWN" if step_v > 0 else "UP"
+            else:
+                self.direction = "RIGHT" if step > 0 else "LEFT"
+                self._dist_in_axis += abs(step)
+        else:
+            step = ndy * self.speed
+            self.rect.y += step
+            if CollisionManager.check_wall_collision(self.rect, walls):
+                self.rect.y -= step
+                # Escape horizontal
+                step_h = ndx * self.speed
+                self.rect.x += step_h
+                if CollisionManager.check_wall_collision(self.rect, walls):
+                    self.rect.x -= step_h
+                else:
+                    self._locked_axis  = "H"
+                    self._dist_in_axis = 0.0
+                    self.direction = "RIGHT" if step_h > 0 else "LEFT"
+            else:
+                self.direction = "DOWN" if step > 0 else "UP"
+                self._dist_in_axis += abs(step)
 
         self.x = self.rect.x
         self.y = self.rect.y
-    # =========================
-    # UPDATE
-    # =========================
 
-    def update(
-        self,
-        player,
-        objectives,
-        walls,
-        enemies,
-        ai_controller,
-        tactical_manager,
-        pathfinding,
-        tile_size,
-        map_width,
-        map_height
-    ):
+    def _navigate_to(self, goal_px, goal_py, pathfinding, walls):
+        """
+        Mueve el tanque hacia (goal_px, goal_py) usando BFS.
+        Sigue el waypoint más próximo del path; si no hay path,
+        se mueve directamente (útil cuando ya está en línea de visión).
+        """
+        self._request_path(pathfinding, goal_px, goal_py)
+        wp = self._next_path_waypoint()
 
-        # =========================
-        # VALIDAR OBJETIVO
-        # =========================
+        if wp is not None:
+            self._move_toward(*wp, walls)
+        else:
+            # Path vacío: destino en la misma tile → movimiento directo
+            self._move_toward(goal_px, goal_py, walls)
 
-        if self.target_objective not in objectives:
-            self.target_objective = None
+    # =========================================================================
+    #  EMBOSCADA TIPO 3
+    # =========================================================================
 
-        # =========================
-        # TIMERS
-        # =========================
+    def _ambush_target(self, player, enemies):
+        """
+        Calcula la posición de emboscada de ESTE tanque tipo 3.
+        Cada tanque ocupa un ángulo distinto alrededor del jugador
+        (separados 120° si hay 3 tanques), creando un cerco real.
+        """
+        # Contar cuántos tanques tipo 3 hay para distribuir ángulos
+        t3_list = [e for e in enemies if e.tank_type == 3]
+        n = max(len(t3_list), 1)
+        angle_step = (2 * math.pi) / n
+        angle = self.ambush_index * angle_step
 
-        self.repath_timer -= 1
-        self.ai_timer -= 1
-        self.target_lock_timer -= 1
-        self.shoot_cooldown -= 1
-        distance = self.distance_to_player(player)
+        # Posición objetivo en el radio de flanqueo
+        tx = player.rect.centerx + FLANK_ORBIT_RADIUS * math.cos(angle)
+        ty = player.rect.centery + FLANK_ORBIT_RADIUS * math.sin(angle)
+        return tx, ty
 
-        # =========================
-        # DISTANCIA A SPAWN
-        # =========================
+    # =========================================================================
+    #  DISPARO
+    # =========================================================================
 
-        spawn_distance = math.sqrt(
-            (self.rect.centerx - self.spawn_x) ** 2 +
-            (self.rect.centery - self.spawn_y) ** 2
+    def try_shoot(self):
+        if self.shoot_cooldown > 0:
+            return None
+        self.shoot_cooldown = SHOOT_COOLDOWN_FRAMES
+        bullet_size = self.size // 4
+        return Bullet(
+            self.rect.centerx - bullet_size // 2,
+            self.rect.centery - bullet_size // 2,
+            bullet_size,
+            self.direction,
+            "ENEMY"
         )
 
-        # =========================
-        # IA
-        # =========================
+    def _aim_at(self, tx, ty):
+        """Actualiza self.direction apuntando a (tx, ty) sin moverse."""
+        dx = tx - self.rect.centerx
+        dy = ty - self.rect.centery
+        if abs(dx) >= abs(dy):
+            self.direction = "RIGHT" if dx > 0 else "LEFT"
+        else:
+            self.direction = "DOWN" if dy > 0 else "UP"
 
-        if (self.ai_timer <= 0
-            and self.target_lock_timer <= 0
-        ):
-            print("REPATH TRIGGERED")
-            print("AI THINKING")
+    # =========================================================================
+    #  HELPERS DE ESTADO
+    # =========================================================================
 
-            # =========================
-            # DEFENDER
-            # =========================
+    def check_base_lost(self):
+        if self.home_base is None:
+            return self.base_lost
+        return getattr(self.home_base, "destroyed", False)
 
-            if self.role == "DEFENDER":
+    def nearest_base(self, objectives):
+        active = [o for o in objectives if not getattr(o, "destroyed", False)]
+        if not active:
+            return None
+        return min(active, key=lambda o: self.distance_to_point(
+            o.rect.centerx, o.rect.centery
+        ))
 
-                # =========================
-                # OBJETIVO EXISTE
-                # =========================
+    # =========================================================================
+    #  UPDATE PRINCIPAL
+    # =========================================================================
 
-                if self.target_objective in objectives:
+    def update(self, player, objectives, walls, ai_state,
+               pathfinding=None, enemies=None):
+        """
+        ai_state : dict devuelto por AIController.decide()
+                   { "action": STATE_*, "target": (x,y)|None }
+        pathfinding : instancia de Pathfinding (puede ser None en fallback)
+        enemies     : lista completa de enemigos (para coordinar emboscada)
 
-                    obj = self.target_objective
+        Retorna una Bullet o None.
+        """
+        if self.shoot_cooldown > 0:
+            self.shoot_cooldown -= 1
 
-                    # distancia al objetivo
-                    dist_to_obj = math.sqrt(
-                        (obj.rect.centerx - self.rect.centerx) ** 2 +
-                        (obj.rect.centery - self.rect.centery) ** 2
-                    )
+        action = ai_state.get("action", STATE_PATROL)
+        target = ai_state.get("target", None)
+        bullet = None
+        pf     = pathfinding   # Alias corto
 
-                    # distancia jugador ↔ objetivo
-                    player_to_obj = math.sqrt(
-                        (player.rect.centerx - obj.rect.centerx) ** 2 +
-                        (player.rect.centery - obj.rect.centery) ** 2
-                    )
-
-                    # =========================
-                    # JUGADOR CERCA DEL OBJETIVO
-                    # =========================
-
-                    if player_to_obj < self.defense_radius:
-                        self.patrol_target = None
-
-                        self.alerted = True
-
-                        # jugador demasiado cerca → atacar
-
-                        if distance > self.attack_range:
-
-                            self.state = EnemyState.ATTACK
-
-                            tx = player.rect.centerx
-                            ty = player.rect.centery
-
-                        elif distance < self.too_close_range:
-
-                            self.state = EnemyState.RETREAT
-
-                            dx = self.rect.centerx - player.rect.centerx
-                            dy = self.rect.centery - player.rect.centery
-
-                            tx = self.rect.centerx + dx
-                            ty = self.rect.centery + dy
-
-                        else:
-
-                            self.state = EnemyState.HOLD
-
-                            tx = self.rect.centerx
-                            ty = self.rect.centery
-
-                    # =========================
-                    # JUGADOR LEJOS
-                    # =========================
-
-                    else:
-
-                        self.alerted = False
-                        # regresar a defender
-
-                        if dist_to_obj > 80:
-
-                            self.state = EnemyState.DEFEND
-
-                            tx = obj.rect.centerx
-                            ty = obj.rect.centery
-
-                        else:
-
-                            self.state = EnemyState.PATROL
-
-                            if self.patrol_target is None:
-                                self.generate_patrol_point()
-
-                            tx, ty = self.patrol_target
-
-                # =========================
-                # OBJETIVO DESTRUIDO
-                # =========================
-
+        # ------------------------------------------------------------------
+        # PATROL — sigue waypoints de patrulla con pathfinding
+        # ------------------------------------------------------------------
+        if action == STATE_PATROL:
+            pt = self.patrol_target
+            if pt is not None:
+                if self.distance_to_point(*pt) < WAYPOINT_TOLERANCE:
+                    self._advance_patrol()
+                elif pf:
+                    self._navigate_to(*pt, pf, walls)
                 else:
+                    self._move_toward(*pt, walls)
 
-                    self.state = EnemyState.ATTACK
-
-                    tx = player.rect.centerx
-                    ty = player.rect.centery
-
-            # =========================
-            # ASSAULT
-            # =========================
-
-            elif self.role == "ASSAULT":
-
-                # =========================
-                # DETECTÓ JUGADOR
-                # =========================
-
-                if distance < self.detection_range:
-                    self.alerted = True
-
-                # =========================
-                # PERDIÓ JUGADOR
-                # =========================
-
-                elif distance > self.detection_range * 1.5:
-                    self.alerted = False
-
-                # =========================
-                # ALERTA ACTIVA
-                # =========================
-
-                if self.alerted:
-
-                    # =========================
-                    # MUY LEJOS DE SU ZONA
-                    # =========================
-
-                    if spawn_distance > self.max_chase_distance:
-
-                        self.alerted = False
-
-                    if distance > self.attack_range:
-
-                        self.state = EnemyState.ATTACK
-
-                        tx = player.rect.centerx
-                        ty = player.rect.centery
-
-                    elif distance < self.too_close_range:
-
-                        self.state = EnemyState.RETREAT
-
-                        dx = self.rect.centerx - player.rect.centerx
-                        dy = self.rect.centery - player.rect.centery
-
-                        tx = self.rect.centerx + dx
-                        ty = self.rect.centery + dy
-
-                    else:
-
-                        self.state = EnemyState.HOLD
-
-                        tx = self.rect.centerx
-                        ty = self.rect.centery
-
-                # =========================
-                # PATRULLA
-                # =========================
-
+        # ------------------------------------------------------------------
+        # CHASE — perseguir al jugador por el mapa con pathfinding
+        # ------------------------------------------------------------------
+        elif action == STATE_CHASE:
+            if target:
+                if pf:
+                    self._navigate_to(*target, pf, walls)
                 else:
-                    obj = self.target_objective
+                    self._move_toward(*target, walls)
 
-                    if obj is None:
+        # ------------------------------------------------------------------
+        # ATTACK — apuntar y disparar sin moverse
+        # ------------------------------------------------------------------
+        elif action == STATE_ATTACK:
+            self._aim_at(player.rect.centerx, player.rect.centery)
+            bullet = self.try_shoot()
 
-                        self.state = EnemyState.PATROL
-
-                        if self.patrol_target is None:
-                            self.generate_patrol_point()
-
-                        tx, ty = self.patrol_target
-
-                    else:
-                        self.state = EnemyState.DEFEND
-
-                        # =========================
-                        # GENERAR PATRULLA DEFENSIVA
-                        # =========================
-
-                        if (
-                            self.patrol_target is None
-                            or self.current_path == []
-                        ):
-
-                            offset_x = random.randint(
-                                -self.defense_patrol_radius,
-                                self.defense_patrol_radius
-                            )
-
-                            offset_y = random.randint(
-                                -self.defense_patrol_radius,
-                                self.defense_patrol_radius
-                            )
-
-                            self.patrol_target = (
-                                obj.rect.centerx + offset_x,
-                                obj.rect.centery + offset_y
-                            )
-
-                        tx, ty = self.patrol_target
-            # =========================
-            # FLANKER
-            # =========================
-
-            elif self.role == "FLANKER":
-
-                # =========================
-                # DETECCIÓN
-                # =========================
-
-                if distance < self.detection_range * 1.5:
-                    self.alerted = True
-
-                # =========================
-                # PERDIÓ JUGADOR
-                # =========================
-
-                elif distance > self.detection_range * 2:
-                    self.alerted = False
-
-                # =========================
-                # ALERTA ACTIVA
-                # =========================
-
-                if self.alerted:
-
-                    # =========================
-                    # MUY LEJOS DE SU ZONA
-                    # =========================
-
-                    if spawn_distance > self.max_chase_distance:
-
-                        self.alerted = False
-
-                    self.state = EnemyState.AMBUSH
-
-                    offsets = [
-                        (-120, 0),
-                        (120, 0),
-                        (0, -120),
-                        (0, 120)
-                    ]
-
-                    offset = random.choice(offsets)
-
-                    tx = player.rect.centerx + offset[0]
-                    ty = player.rect.centery + offset[1]
-
-                # =========================
-                # PATRULLA
-                # =========================
-
+        # ------------------------------------------------------------------
+        # RETURN — volver a la base con pathfinding
+        # ------------------------------------------------------------------
+        elif action == STATE_RETURN:
+            if target:
+                if pf:
+                    self._navigate_to(*target, pf, walls)
                 else:
+                    self._move_toward(*target, walls)
 
-                    self.state = EnemyState.PATROL
-
-                    if self.patrol_target is None:
-                        self.generate_patrol_point()
-
-                    tx, ty = self.patrol_target
-            # ---------------------------------
-            # ATTACK
-            # ---------------------------------
-
-            elif self.state == EnemyState.ATTACK:
-
-                # =========================
-                # Última posición conocida
-                # =========================
-
-                if tactical_manager.last_known_player_position:
-
-                    lx, ly = (
-                        tactical_manager.last_known_player_position
-                    )
-
-                    # Variación táctica
-                    offset_x = random.randint(-80, 80)
-                    offset_y = random.randint(-80, 80)
-
-                    tx = lx + offset_x
-                    ty = ly + offset_y
-
+        # ------------------------------------------------------------------
+        # DEFEND — patrulla corta alrededor de la base
+        # ------------------------------------------------------------------
+        elif action == STATE_DEFEND:
+            pt = self.patrol_target
+            if pt is not None:
+                if self.distance_to_point(*pt) < WAYPOINT_TOLERANCE:
+                    self._advance_patrol()
+                elif pf:
+                    self._navigate_to(*pt, pf, walls)
                 else:
+                    self._move_toward(*pt, walls)
 
-                    # Patrulla libre
-                    if self.patrol_target is None:
+        # ------------------------------------------------------------------
+        # FLANK — emboscada coordinada tipo 3
+        # Cada tanque tipo 3 navega a su ángulo único alrededor del jugador.
+        # Cuando llega a su posición, dispara. Si el jugador se mueve,
+        # el path se recalcula (PATH_REFRESH_TYPE3 frames).
+        # ------------------------------------------------------------------
+        elif action == STATE_FLANK:
+            e_list = enemies if enemies is not None else [self]
+            amb_x, amb_y = self._ambush_target(player, e_list)
+            dist_to_ambush = self.distance_to_point(amb_x, amb_y)
 
-                        self.patrol_target = (
-                            tactical_manager.generate_patrol_point(
-                                self
-                            )
-                        )
-
-                    tx, ty = self.patrol_target
-            # ---------------------------------
-            # SEARCH
-            # ---------------------------------
-
-            elif self.state == EnemyState.SEARCH:
-
-                if tactical_manager.last_known_player_position:
-
-                    tx, ty = (
-                        tactical_manager.last_known_player_position
-                    )
-
+            if dist_to_ambush > WAYPOINT_TOLERANCE:
+                # Moverse a la posición de emboscada
+                if pf:
+                    self._navigate_to(amb_x, amb_y, pf, walls)
                 else:
+                    self._move_toward(amb_x, amb_y, walls)
 
-                    if self.patrol_target is None:
+            # Disparar siempre que esté en rango, haya llegado o no
+            self._aim_at(player.rect.centerx, player.rect.centery)
+            bullet = self.try_shoot()
 
-                        self.patrol_target = (
-                            tactical_manager.generate_patrol_point(
-                                self
-                            )
-                        )
-
-                    tx, ty = self.patrol_target
-
-            # ---------------------------------
-            # AMBUSH
-            # ---------------------------------
-
-            elif self.state == EnemyState.AMBUSH:
-
-                tactical_target = (
-                    tactical_manager.get_tactical_target(
-                        self,
-                        enemies,
-                        tile_size
-                    )
-                )
-
-                if tactical_target:
-
-                    tx, ty = tactical_target
-
+        # ------------------------------------------------------------------
+        # ASSAULT — tipos 1/2 perdieron su base: persiguen sin límite
+        # ------------------------------------------------------------------
+        elif action == STATE_ASSAULT:
+            if target:
+                if pf:
+                    self._navigate_to(*target, pf, walls)
                 else:
+                    self._move_toward(*target, walls)
+            if self.distance_to_player(player) < ATTACK_RADIUS:
+                self._aim_at(player.rect.centerx, player.rect.centery)
+                bullet = self.try_shoot()
 
-                    tx = player.rect.centerx
-                    ty = player.rect.centery
-
-            # ---------------------------------
-            # FALLBACK
-            # ---------------------------------
-
-            else:
-
-                tx = player.rect.centerx
-                ty = player.rect.centery
-
-            # =========================
-            # GUARDAR TARGET
-            # =========================
-
-            # =========================
-            # TARGET CAMBIÓ
-            # =========================
-
-            new_goal = (
-                tx // tile_size,
-                ty // tile_size
-            )
-
-            old_goal = (
-                self.target_x // tile_size,
-                self.target_y // tile_size
-            ) if self.target_x and self.target_y else None
-
-            if new_goal != old_goal:
-
-                self.current_path = []
-                self.path_index = 0
-            self.target_x = tx
-            self.target_y = ty
-
-            self.target_lock_timer = (
-                self.target_lock_duration
-            )
-
-            self.ai_timer = self.ai_interval
-
-        # =========================
-        # VALIDACIÓN
-        # =========================
-
-        if self.target_x is None or self.target_y is None:
-            return
-
-        # =========================
-        # REPATH CONTROLADO
-        # =========================
-
-        if self.repath_timer <= 0 or len(self.current_path) == 0:
-
-            start_x = self.rect.centerx // tile_size
-            start_y = self.rect.centery // tile_size
-
-            goal_x = self.target_x // tile_size
-            goal_y = self.target_y // tile_size
-
-            # =========================
-            # WALL SET
-            # =========================
-
-            wall_set = set()
-
-            for wall in walls:
-
-                wx = wall.rect.x // tile_size
-                wy = wall.rect.y // tile_size
-
-                wall_set.add((wx, wy))
-
-            # =========================
-            # PATHFINDING
-            # =========================
-
-            path = pathfinding.find_path(
-                (start_x, start_y),
-                (goal_x, goal_y),
-                wall_set,
-                map_width,
-                map_height
-            )
-
-            if path:
-
-                self.current_path = path
-                self.path_index = 0
-
-            self.repath_timer = self.repath_interval
-        
-        # =========================
-        # DISPARO IA
-        # =========================
-
-        if (
-            self.state in [
-                EnemyState.ATTACK,
-                EnemyState.HOLD
-            ]
-            and distance <= self.attack_range
-        ):
-
-            if self.shoot_cooldown <= 0:
-
-                print("ENEMY SHOOT")
-
-                self.shoot_cooldown = 90
-
-        # =========================
-        # MOVIMIENTO
-        # =========================
-
-        self.follow_path(tile_size)
-
-        print(
-            "STATE:", self.state,
-            "| PATH:", len(self.current_path),
-            "| INDEX:", self.path_index,
-            "| AI:", self.ai_timer,
-            "| LOCK:", self.target_lock_timer,
-            "| REPATH:", self.repath_timer
-        )
+        return bullet
