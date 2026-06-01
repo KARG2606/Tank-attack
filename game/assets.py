@@ -9,13 +9,15 @@ ASSETS_DIR = "resourses"
 
 DIRECTIONS = ("UP", "RIGHT", "DOWN", "LEFT")
 
-# Pygame rota en sentido antihorario. Asumimos que el sprite original
-# apunta hacia ARRIBA. Para apuntar a la derecha, rotamos -90°, etc.
+# Pygame rota en sentido antihorario.
+# Los sprites de resourses/ apuntan hacia la DERECHA en su orientación
+# original (cañón a la derecha). Estos ángulos los giran a la dirección
+# lógica de movimiento o disparo.
 ROTATIONS = {
-    "UP": 0,
-    "RIGHT": -90,
-    "DOWN": 180,
-    "LEFT": 90,
+    "UP": 90,
+    "RIGHT": 0,
+    "DOWN": -90,
+    "LEFT": 180,
 }
 
 

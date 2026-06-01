@@ -38,7 +38,7 @@ class EnemyTank(Entity):
             color = (0, 120, 255)
         else:
             self.role = "FLANKER"
-            color = (0, 200, 100)
+            color = (170, 70, 220)
 
         super().__init__(x, y, size, color)
 
