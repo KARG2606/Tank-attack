@@ -1,7 +1,13 @@
-class EnemyState:
+from enum import Enum
 
-    DEFEND = "DEFEND"
 
-    ATTACK = "ATTACK"
+class EnemyState(Enum):
 
-    RETREAT = "RETREAT"
+    DEFEND = 1
+    ATTACK = 2
+    RETREAT = 3
+
+    PATROL = 4
+    SEARCH = 5
+    AMBUSH = 6
+    HOLD = 7

@@ -14,6 +14,9 @@ from game.constants import (
 from game.level_loader import LevelLoader
 from prolog.prolog_manager import PrologManager
 from util.generador_aleatorio import GeneradorAleatorio
+from logic.ai_controller import AIController
+from logic.tactical_manager import TacticalManager
+from logic.pathfinding import Pathfinding
 
 
 LEVELS = [
@@ -77,9 +80,18 @@ class GameManager:
 
         self.prolog_manager = PrologManager()
 
+        # Capas lógicas de IA (decisión + coordinación + pathfinding).
+        self.ai_controller = AIController(self.prolog_manager)
+        self.tactical_manager = TacticalManager()
+        self.pathfinding = Pathfinding()
+
         self._current_level_idx = 0
         self.level_loader = None
         self.bullets = []
+
+        # Cada cuántos frames se consulta a Prolog la nueva decisión.
+        self._prolog_query_interval = 60  # 1 segundo a 60 FPS
+        self._prolog_query_timer = 0
 
     # =========================
     # Flujo de niveles
@@ -98,11 +110,37 @@ class GameManager:
         # Aleatoriza posiciones de objetivos y enemigos.
         self.generador.aleatorizar_nivel(self.level_loader)
 
-        # Regenera el grafo Prolog para el mapa actual.
+        # Regenera el grafo Prolog y limpia el caché de rutas.
         self.prolog_manager.generate_graph(self.level_loader)
+        self.prolog_manager.clear_cache()
+
+        # Reinicia memoria táctica (último avistamiento del jugador).
+        self.tactical_manager = TacticalManager()
+
+        # Empareja cada enemigo con un objetivo a custodiar.
+        self._pair_enemies_with_objectives()
 
         self.bullets = []
         self.state = STATE_PLAYING
+
+    def _pair_enemies_with_objectives(self):
+        """Asigna a cada enemigo el objetivo más cercano sin asignar."""
+        assigned = set()
+        for enemy in self.level_loader.enemies:
+            best = None
+            best_dist = float("inf")
+            for obj in self.level_loader.objectives:
+                if id(obj) in assigned:
+                    continue
+                dx = obj.rect.centerx - enemy.rect.centerx
+                dy = obj.rect.centery - enemy.rect.centery
+                d = dx * dx + dy * dy
+                if d < best_dist:
+                    best_dist = d
+                    best = obj
+            if best is not None:
+                enemy.target_objective = best
+                assigned.add(id(best))
 
     def _advance_after_clear(self):
         self._current_level_idx += 1
@@ -181,12 +219,38 @@ class GameManager:
             if bullet:
                 self.bullets.append(bullet)
 
+            # Memoria táctica compartida (TacticalManager).
+            self.tactical_manager.update(self.level_loader.player)
+
+        # =========================
+        # Consulta a Prolog la decisión de cada enemigo cada N frames.
+        # =========================
+        self._prolog_query_timer -= 1
+        if self._prolog_query_timer <= 0:
+            self._prolog_query_timer = self._prolog_query_interval
+            self.prolog_manager.sync_state(self.level_loader)
+            for idx, enemy in enumerate(self.level_loader.enemies):
+                enemy.prolog_action = (
+                    self.prolog_manager.consultar_accion(idx)
+                )
+                # Si Prolog dice atacar, este enemigo vio al jugador y
+                # avisa a sus aliados (coordinación — puntos extra).
+                if enemy.prolog_action == "atacar":
+                    self.prolog_manager.asentar_avistamiento(idx)
+
         for enemy in self.level_loader.enemies:
 
             enemy_bullet = enemy.update(
                 self.level_loader.player,
                 self.level_loader.objectives,
-                self.level_loader.walls
+                self.level_loader.walls,
+                self.level_loader.enemies,
+                self.ai_controller,
+                self.tactical_manager,
+                self.pathfinding,
+                TILE_SIZE,
+                self.level_loader.map_width,
+                self.level_loader.map_height,
             )
 
             if enemy_bullet:
