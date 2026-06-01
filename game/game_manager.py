@@ -12,6 +12,7 @@ from game.constants import (
 )
 
 from game.level_loader import LevelLoader
+from game.assets import Assets
 from prolog.prolog_manager import PrologManager
 from util.generador_aleatorio import GeneradorAleatorio
 from logic.ai_controller import AIController
@@ -75,6 +76,10 @@ class GameManager:
         self.title_font = pygame.font.SysFont(
             "Arial", 96, bold=True
         )
+
+        # Sprites cargados una sola vez.
+        self.assets = Assets()
+        self._level_background = None
 
         self.generador = GeneradorAleatorio()
 
@@ -402,36 +407,70 @@ class GameManager:
         offset_x = (LOGICAL_WIDTH - map_pixel_width) // 2
         offset_y = (LOGICAL_HEIGHT - map_pixel_height) // 2
 
+        # Fondo del mapa.
+        if (
+            self._level_background is None
+            or self._level_background.get_size()
+            != (map_pixel_width, map_pixel_height)
+        ):
+            self._level_background = self.assets.background_scaled(
+                map_pixel_width, map_pixel_height
+            )
+        self.game_surface.blit(
+            self._level_background, (offset_x, offset_y)
+        )
+
+        # Muros.
         for wall in self.level_loader.walls:
-            r = wall.rect.copy()
-            r.x += offset_x
-            r.y += offset_y
-            pygame.draw.rect(self.game_surface, wall.color, r)
+            self.game_surface.blit(
+                self.assets.wall,
+                (wall.rect.x + offset_x, wall.rect.y + offset_y),
+            )
 
-        for enemy in self.level_loader.enemies:
-            r = enemy.rect.copy()
-            r.x += offset_x
-            r.y += offset_y
-            pygame.draw.rect(self.game_surface, enemy.color, r)
-
+        # Objetivos.
         for objective in self.level_loader.objectives:
-            r = objective.rect.copy()
-            r.x += offset_x
-            r.y += offset_y
-            pygame.draw.rect(self.game_surface, objective.color, r)
+            sprite = self.assets.objective_sprite_for(objective)
+            self.game_surface.blit(
+                sprite,
+                (
+                    objective.rect.x + offset_x,
+                    objective.rect.y + offset_y,
+                ),
+            )
 
+        # Enemigos.
+        for enemy in self.level_loader.enemies:
+            sprite = self.assets.tank_sprite_for(
+                enemy, enemy.enemy_type
+            )
+            rect = sprite.get_rect(
+                center=(
+                    enemy.rect.centerx + offset_x,
+                    enemy.rect.centery + offset_y,
+                )
+            )
+            self.game_surface.blit(sprite, rect)
+
+        # Jugador (parpadea si invulnerable).
         if self.level_loader.player:
             player = self.level_loader.player
-            r = player.rect.copy()
-            r.x += offset_x
-            r.y += offset_y
             blink_visible = (
                 not player.is_invulnerable
                 or (pygame.time.get_ticks() // 80) % 2 == 0
             )
             if blink_visible:
-                pygame.draw.rect(self.game_surface, player.color, r)
+                sprite = self.assets.tank_sprite_for(
+                    player, "player"
+                )
+                rect = sprite.get_rect(
+                    center=(
+                        player.rect.centerx + offset_x,
+                        player.rect.centery + offset_y,
+                    )
+                )
+                self.game_surface.blit(sprite, rect)
 
+        # Balas (cuadritos blancos — no hay sprite específico).
         for bullet in self.bullets:
             r = bullet.rect.copy()
             r.x += offset_x
