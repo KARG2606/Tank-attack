@@ -1,3 +1,5 @@
+import os
+
 import pygame
 
 from game.constants import (
@@ -41,6 +43,18 @@ START_BUTTON_RECT = pygame.Rect(
     440,
     80,
 )
+
+# Música de fondo. Buscamos cualquiera de estos archivos en resourses/.
+# El primero que exista se carga; si ninguno existe el juego va en silencio.
+MUSIC_CANDIDATES = (
+    "music.ogg",
+    "music.mp3",
+    "music.wav",
+    "battle.ogg",
+    "battle.mp3",
+)
+
+MUSIC_VOLUME_DEFAULT = 0.3  # suave
 
 
 class GameManager:
@@ -88,6 +102,12 @@ class GameManager:
         self.assets = Assets()
         self._level_background = None
 
+        # Música de fondo (autodescubierta en resourses/).
+        self._music_loaded = False
+        self._music_muted = False
+        self._music_volume = MUSIC_VOLUME_DEFAULT
+        self._init_audio()
+
         self.generador = GeneradorAleatorio()
 
         self.prolog_manager = PrologManager()
@@ -104,6 +124,42 @@ class GameManager:
         # Cada cuántos frames se consulta a Prolog la nueva decisión.
         self._prolog_query_interval = 60  # 1 segundo a 60 FPS
         self._prolog_query_timer = 0
+
+    # =========================
+    # Audio
+    # =========================
+    def _init_audio(self):
+        """
+        Inicializa el mixer y carga la primera pista que encuentre en
+        resourses/ entre los nombres candidatos. Si no hay nada, el
+        juego corre en silencio sin romper.
+        """
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except pygame.error:
+            return
+
+        for name in MUSIC_CANDIDATES:
+            path = os.path.join("resourses", name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.set_volume(self._music_volume)
+                pygame.mixer.music.play(loops=-1)
+                self._music_loaded = True
+                return
+            except pygame.error:
+                continue
+
+    def _toggle_mute(self):
+        if not self._music_loaded:
+            return
+        self._music_muted = not self._music_muted
+        pygame.mixer.music.set_volume(
+            0 if self._music_muted else self._music_volume
+        )
 
     # =========================
     # Flujo de niveles
@@ -187,6 +243,9 @@ class GameManager:
 
                 if event.key == pygame.K_ESCAPE:
                     self.running = False
+
+                elif event.key == pygame.K_m:
+                    self._toggle_mute()
 
                 elif self.state == STATE_MENU and event.key in (
                     pygame.K_RETURN, pygame.K_SPACE

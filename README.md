@@ -73,6 +73,7 @@ TANK_SEED=42 python3 main.py
 | `W` `A` `S` `D` o flechas | Mover el tanque del jugador |
 | `Espacio` | Disparar |
 | `R` | Reiniciar el nivel actual |
+| `M` | Mutear / desmutear la música |
 | `Enter` / `Espacio` / clic | Iniciar partida desde el menú o avanzar de nivel |
 | `Esc` | Cerrar el juego |
 
@@ -159,6 +160,29 @@ Tank-attack/
 │   └── level3.txt
 └── resourses/                    # sprites (jugador, enemigos, muro, objetivo, fondo)
 ```
+
+---
+
+## Música de fondo (opcional)
+
+El juego busca un archivo de audio en `resourses/` y lo reproduce en loop a volumen bajo. Si no existe ninguno, corre en silencio sin romper.
+
+Nombres reconocidos (por orden de prioridad):
+
+1. `music.ogg`
+2. `music.mp3`
+3. `music.wav`
+4. `battle.ogg`
+5. `battle.mp3`
+
+Solo deposita un archivo con uno de esos nombres en `resourses/`. Fuentes con música libre (CC0 / CC-BY):
+
+- <https://opengameart.org/art-search-advanced?keys=battle+music&field_art_type_tid%5B%5D=12>
+- <https://incompetech.com/music/royalty-free/> (Kevin MacLeod, requiere atribución)
+- <https://pixabay.com/music/search/battle/>
+- <https://freesound.org/search/?q=battle+loop>
+
+Para mutear en cualquier momento, presiona `M`.
 
 ---
 
