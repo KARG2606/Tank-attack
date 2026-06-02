@@ -33,12 +33,13 @@ STATE_WIN = "WIN"
 STATE_GAME_OVER = "GAME_OVER"
 
 
-# Botón "INICIAR" en coordenadas lógicas (1280×720).
+# Botón principal en coordenadas lógicas (1280×720). Lo bastante ancho
+# para que entre "SIGUIENTE" en mayúsculas con margen.
 START_BUTTON_RECT = pygame.Rect(
-    LOGICAL_WIDTH // 2 - 160,
+    LOGICAL_WIDTH // 2 - 220,
     LOGICAL_HEIGHT // 2 + 20,
-    320,
-    72,
+    440,
+    80,
 )
 
 
@@ -75,6 +76,12 @@ class GameManager:
 
         self.title_font = pygame.font.SysFont(
             "Arial", 96, bold=True
+        )
+
+        # Fuente específica para botones (más chica que la big_font
+        # para que el texto no rebase el borde).
+        self.button_font = pygame.font.SysFont(
+            "Arial", 44, bold=True
         )
 
         # Sprites cargados una sola vez.
@@ -393,7 +400,7 @@ class GameManager:
             self.game_surface, (255, 255, 255), rect, width=3, border_radius=12
         )
 
-        text = self.big_font.render(label, True, (255, 255, 255))
+        text = self.button_font.render(label, True, (255, 255, 255))
         text_rect = text.get_rect(center=rect.center)
         self.game_surface.blit(text, text_rect)
 
