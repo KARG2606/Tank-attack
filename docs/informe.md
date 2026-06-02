@@ -13,7 +13,7 @@ Instituto Tecnológico de Costa Rica · Sede Regional San Carlos
 | | |
 |---|---|
 | **Estudiante 1** | Angie Herrera — Carné 2020035640 |
-| **Estudiante 2** | Kevin Rivera — Carné NOMBRE_AQUÍ |
+| **Estudiante 2** | Kevin Rivera — Carné 2024157337|
 | **Profesor** | Oscar Víquez Acuña |
 | **Fecha de entrega** | 2 de junio de 2026 |
 
