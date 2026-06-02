@@ -3,7 +3,9 @@
 ## Informe de diseño e implementación
 
 **Proyecto 2 — Paradigma Lógico y Orientado a Objetos**
+
 Lenguajes de Programación · 2026
+
 Instituto Tecnológico de Costa Rica · Sede Regional San Carlos
 
 ---
